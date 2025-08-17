@@ -1,0 +1,60 @@
+version: "3.9"
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-changeme}
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili_data:/meili_data
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - MEILI_URL=http://meilisearch:7700
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-changeme}
+      - QDRANT_COLLECTION=recipes_chunks_subset_5k
+      - MEILI_INDEX=recipes_chunks_subset_5k
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    depends_on:
+      qdrant:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+    volumes:
+      - ..:/app
+    ports:
+      - "8000:8000"
+
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ui
+    environment:
+      - API_BASE=http://api:8000
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - ..:/app
+    ports:
+      - "8501:8501"
+
+volumes:
+  qdrant_data:
+  meili_data:

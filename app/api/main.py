@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter as QFilter
 import meilisearch
@@ -34,10 +34,15 @@ MEILI_INDEX = os.getenv("MEILI_INDEX", "recipes_chunks")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Re-ranking config
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "30"))
 
 _embedder: SentenceTransformer | None = None
 _qdrant: QdrantClient | None = None
 _meili: meilisearch.Client | None = None
+_reranker: CrossEncoder | None = None
 
 
 def get_clients():
@@ -49,6 +54,13 @@ def get_clients():
     if _meili is None:
         _meili = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
     return _embedder, _qdrant, _meili
+
+
+def get_reranker() -> CrossEncoder:
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder(RERANK_MODEL)
+    return _reranker
 
 
 @app.get("/healthz")
@@ -151,6 +163,8 @@ async def query(req: QueryRequest):
     opts = req.options or {}
     top_k = int(opts.get("k", 6))
     use_llm = bool(opts.get("llm", True))
+    use_rerank = bool(opts.get("rerank", RERANK_ENABLED))
+    rerank_candidates = int(opts.get("rerank_candidates", RERANK_CANDIDATES))
 
     diagnostics: Dict[str, Any] = {"top_k": top_k}
 
@@ -185,10 +199,42 @@ async def query(req: QueryRequest):
     for h in m_hits:
         payload_lookup.setdefault(h["id"], h["payload"])
 
+    # Optional re-ranking using a cross-encoder on top fused candidates
+    reranked_ids: List[str] | None = None
+    if use_rerank:
+        try:
+            reranker = get_reranker()
+            # Build candidate pairs (query, text)
+            candidates = fused[: max(top_k, rerank_candidates)]
+            pairs = []
+            cand_ids = []
+            for doc_id, _ in candidates:
+                p = payload_lookup.get(doc_id, {})
+                text = (p.get("text") or "").strip()
+                if not text:
+                    continue
+                pairs.append((query_text, text))
+                cand_ids.append(doc_id)
+            if pairs:
+                scores = reranker.predict(pairs)
+                # sort by score desc
+                scored = list(zip(cand_ids, [float(s) for s in scores]))
+                scored.sort(key=lambda x: x[1], reverse=True)
+                reranked_ids = [doc_id for doc_id, _ in scored]
+                diagnostics["rerank_model"] = RERANK_MODEL
+                diagnostics["rerank_enabled"] = True
+                diagnostics["rerank_candidates_used"] = len(reranked_ids)
+        except Exception as e:
+            diagnostics["rerank_error"] = str(e)
+            diagnostics["rerank_enabled"] = False
+
     sources = []
     import re, urllib.parse
     ws_re = re.compile(r"\s+")
-    for doc_id, score in fused[:top_k]:
+    ordering = reranked_ids if reranked_ids else [doc_id for doc_id, _ in fused]
+    for doc_id in ordering[:top_k]:
+        # Find original score from fused for reference
+        fused_score = next((s for i, s in fused if i == doc_id), 0.0)
         p = payload_lookup.get(doc_id, {})
         url = p.get("url")
         title = p.get("title") or p.get("name")
@@ -208,7 +254,7 @@ async def query(req: QueryRequest):
                 "section": p.get("section"),
                 "position": p.get("position"),
                 "snippet": snippet,
-                "score": score,
+                "score": fused_score,
             }
         )
 

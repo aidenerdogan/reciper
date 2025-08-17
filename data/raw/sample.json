@@ -1,0 +1,23 @@
+[
+  {
+    "id": "sample-1",
+    "title": "Quick Chickpea Salad",
+    "url": "https://example.com/chickpea-salad",
+    "ingredients": [
+      "1 can chickpeas, rinsed",
+      "1 cucumber, diced",
+      "1 tomato, diced",
+      "2 tbsp olive oil",
+      "1 tbsp lemon juice",
+      "salt and pepper"
+    ],
+    "instructions": [
+      "Combine chickpeas, cucumber, and tomato in a bowl.",
+      "Whisk olive oil, lemon juice, salt, and pepper.",
+      "Toss dressing with salad and serve."
+    ],
+    "tags": ["vegan", "quick", "salad"],
+    "time": {"total": 10},
+    "yields": "2 servings"
+  }
+]
